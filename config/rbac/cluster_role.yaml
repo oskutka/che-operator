@@ -260,6 +260,34 @@ rules:
     verbs:
       - get
   - apiGroups:
+      - apps
+    resources:
+      - daemonsets
+    resourceNames:
+      - machine-config-daemon
+    verbs:
+      - get
+  - apiGroups:
+      - machineconfiguration.openshift.io
+    resources:
+      - pinnedimagesets
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - machineconfiguration.openshift.io
+    resources:
+      - machineconfignodes
+      - machineconfigpools
+    verbs:
+      - get
+      - list
+  - apiGroups:
       - ''
     resources:
       - pods/log

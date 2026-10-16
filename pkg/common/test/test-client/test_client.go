@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	configv1 "github.com/openshift/api/config/v1"
+	mcfgv1 "github.com/openshift/api/machineconfiguration/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -103,12 +104,16 @@ func getScheme() *runtime.Scheme {
 	scheme.AddKnownTypes(corev1.SchemeGroupVersion, &corev1.LimitRange{}, &corev1.LimitRangeList{})
 	scheme.AddKnownTypes(console.GroupVersion, &console.ConsoleLink{})
 	scheme.AddKnownTypes(chev1alpha1.GroupVersion, &chev1alpha1.KubernetesImagePuller{})
+	scheme.AddKnownTypes(mcfgv1.GroupVersion, &mcfgv1.PinnedImageSet{}, &mcfgv1.PinnedImageSetList{})
+	scheme.AddKnownTypes(mcfgv1.GroupVersion, &mcfgv1.MachineConfigNode{}, &mcfgv1.MachineConfigNodeList{})
+	scheme.AddKnownTypes(mcfgv1.GroupVersion, &mcfgv1.MachineConfigPool{}, &mcfgv1.MachineConfigPoolList{})
 	scheme.AddKnownTypes(securityv1.GroupVersion, &securityv1.SecurityContextConstraints{})
 	scheme.AddKnownTypes(rbacv1.SchemeGroupVersion, &rbacv1.Role{}, &rbacv1.RoleList{})
 	scheme.AddKnownTypes(rbacv1.SchemeGroupVersion, &rbacv1.RoleBinding{}, &rbacv1.RoleBindingList{})
 	scheme.AddKnownTypes(rbacv1.SchemeGroupVersion, &rbacv1.ClusterRole{}, &rbacv1.ClusterRoleList{})
 	scheme.AddKnownTypes(rbacv1.SchemeGroupVersion, &rbacv1.ClusterRoleBinding{}, &rbacv1.ClusterRoleBindingList{})
 	scheme.AddKnownTypes(appsv1.SchemeGroupVersion, &appsv1.Deployment{}, &appsv1.DeploymentList{})
+	scheme.AddKnownTypes(appsv1.SchemeGroupVersion, &appsv1.DaemonSet{}, &appsv1.DaemonSetList{})
 	scheme.AddKnownTypes(chev2.GroupVersion, &chev2.CheCluster{}, &chev2.CheClusterList{})
 	scheme.AddKnownTypes(networkingv1.SchemeGroupVersion, &networkingv1.Ingress{}, &networkingv1.IngressList{})
 	scheme.AddKnownTypes(networkingv1.SchemeGroupVersion, &networkingv1.NetworkPolicy{}, &networkingv1.NetworkPolicyList{})

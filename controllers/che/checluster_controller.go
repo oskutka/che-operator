@@ -30,6 +30,7 @@ import (
 
 	"github.com/eclipse-che/che-operator/pkg/deploy/devworkspace"
 	imagepuller "github.com/eclipse-che/che-operator/pkg/deploy/image-puller"
+	pinnedimageset "github.com/eclipse-che/che-operator/pkg/deploy/pinned-image-set"
 
 	editorsdefinitions "github.com/eclipse-che/che-operator/pkg/deploy/editors-definitions"
 
@@ -129,6 +130,15 @@ func NewReconciler(
 	reconcilerManager.AddReconciler(dashboard.NewDashboardReconciler())
 	reconcilerManager.AddReconciler(gateway.NewGatewayReconciler())
 	reconcilerManager.AddReconciler(server.NewCheServerReconciler())
+	// The native backend is registered ahead of the community one so that the two are
+	// independent in failure as well as in allocation. The chain stops at the first reconciler
+	// that is not done, so with the order reversed any image puller failure — a missing
+	// operator, a rejected CR, a transient API error — would also stop every digest referenced
+	// image from being pinned, even though pinning needs nothing from it.
+	if infrastructure.IsOpenShift() {
+		reconcilerManager.AddReconciler(pinnedimageset.NewPinnedImageSetReconciler())
+	}
+
 	reconcilerManager.AddReconciler(imagepuller.NewImagePuller())
 
 	if infrastructure.IsOpenShift() {

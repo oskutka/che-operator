@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2019-2025 Red Hat, Inc.
+// Copyright (c) 2019-2026 Red Hat, Inc.
 // This program and the accompanying materials are made
 // available under the terms of the Eclipse Public License 2.0
 // which is available at https://www.eclipse.org/legal/epl-2.0/
@@ -58,6 +58,10 @@ func TestImagePullerConfiguration(t *testing.T) {
 			}),
 		},
 		{
+			// An administrator supplied list is now split between the two backends like any
+			// other, so the community backend is given its share rather than the raw field.
+			// The images are unchanged, but the entry names are regenerated, since they are
+			// derived from the reference and carry nothing an administrator chose.
 			name: "case #2: KubernetesImagePuller with custom configuration",
 			cheCluster: InitCheCluster(chev2.ImagePuller{
 				Enable: true,
@@ -165,6 +169,103 @@ func TestImagePullerConfiguration(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSpecFieldRoundTrip pins the only durable record of what the community backend was asked
+// to pre-pull. The names convertToSpecField derives are lossy — they are truncated, lowercased
+// and stripped of illegal characters — so the parser has to recover the images and nothing else.
+func TestSpecFieldRoundTrip(t *testing.T) {
+	testCases := []struct {
+		name   string
+		images []string
+	}{
+		{
+			name:   "Plain references",
+			images: []string{"quay.io/che/image-1:latest", "docker.io/library/ubi:9.7"},
+		},
+		{
+			name:   "Digest references, which contain no '=' but are long",
+			images: []string{"quay.io/che/image-1@" + digest1, "quay.io/che/image-2@" + digest2},
+		},
+		{
+			name: "Images whose last path segment collides, so only the index keeps names unique",
+			images: []string{
+				"quay.io/che-incubator/che-code:next",
+				"quay.io/eclipse/che-code:next",
+			},
+		},
+		{
+			name: "A name that cannot be converted to RFC 1123 at all, which falls back to 'image'",
+			images: []string{
+				"quay.io/che/_____:latest",
+				"quay.io/che/image-1:latest",
+			},
+		},
+		{
+			name:   "A single image",
+			images: []string{"quay.io/che/image-1:latest"},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			assert.Equal(t, testCase.images, ImagesFromSpecField(convertToSpecField(testCase.images, nil)))
+		})
+	}
+}
+
+func TestImagesFromSpecField(t *testing.T) {
+	assert.Empty(t, ImagesFromSpecField(""))
+	assert.Empty(t, ImagesFromSpecField(";;"))
+
+	// Hand written values do not necessarily carry the trailing separator our own writer adds.
+	assert.Equal(t, []string{"image_1"}, ImagesFromSpecField("image-1=image_1"))
+
+	// Whitespace around hand written entries is not part of the image reference.
+	assert.Equal(t, []string{"image_1", "image_2"}, ImagesFromSpecField(" image-1 = image_1 ; image-2=image_2 ;"))
+
+	// An entry without a name is taken to be the image. The alternative, skipping it, loses it
+	// silently: the field is rewritten from the parsed result, so an unrecognised entry is gone
+	// from the cluster next reconcile and appears in no bucket of the allocation either.
+	assert.Equal(t, []string{"image_1"}, ImagesFromSpecField("image_1;"))
+	assert.Equal(t, []string{"image_1", "image_2"}, ImagesFromSpecField("image_1;named=image_2;"))
+}
+
+// TestAnAdministratorKeepsTheirOwnImageNames covers the field being rewritten on every
+// reconcile rather than only when empty. The names become container names in the community
+// backend's DaemonSet, so regenerating them would roll it on an upgrade that changed nothing.
+func TestAnAdministratorKeepsTheirOwnImageNames(t *testing.T) {
+	const written = "my-own-name=quay.io/che/image-1:latest;another=quay.io/che/image-2:latest;"
+
+	names := namesFromSpecField(written)
+	images := ImagesFromSpecField(written)
+
+	assert.Equal(t, written, convertToSpecField(images, names), "rewriting an untouched list must not change it")
+
+	// Only the half the community backend still serves, as an opted in cluster would write it.
+	assert.Equal(t,
+		"another=quay.io/che/image-2:latest;",
+		convertToSpecField([]string{"quay.io/che/image-2:latest"}, names))
+
+	// An image the administrator never named falls back to a derived name, and the derived
+	// names stay unique among themselves.
+	assert.Equal(t,
+		"my-own-name=quay.io/che/image-1:latest;image-3-1=quay.io/che/image-3:latest;",
+		convertToSpecField([]string{"quay.io/che/image-1:latest", "quay.io/che/image-3:latest"}, names))
+}
+
+// TestNamesFromSpecFieldIgnoresWhatItCannotName guards the lookup against the same hand
+// written input ImagesFromSpecField has to tolerate.
+func TestNamesFromSpecFieldIgnoresWhatItCannotName(t *testing.T) {
+	assert.Empty(t, namesFromSpecField(""))
+	assert.Empty(t, namesFromSpecField("image_1;"))
+	assert.Empty(t, namesFromSpecField("=image_1;"))
+	assert.Equal(t, map[string]string{"image_1": "name"}, namesFromSpecField(" name = image_1 ;"))
+
+	// Allocate keeps the first of a repeated image, so the first name has to survive with it.
+	assert.Equal(t,
+		map[string]string{"image_1": "first"},
+		namesFromSpecField("first=image_1;second=image_1;"))
 }
 
 func InitCheCluster(imagePuller chev2.ImagePuller) *chev2.CheCluster {

@@ -159,10 +159,29 @@ const (
 	GatewayAuthenticationContainerName = "oauth-proxy"
 	GatewayAuthorizationContainerName  = "kube-rbac-proxy"
 	KubernetesImagePullerComponentName = "kubernetes-image-puller"
-	EditorDefinitionComponentName      = "editor-definition"
-	CheCABundle                        = "ca-bundle"
-	MetricsComponentName               = "metrics"
-	WorkspacesNamespaceComponentName   = "workspaces-namespace"
+	PinnedImageSetComponentName        = "pinned-image-set"
+	// MachineConfigPoolRoleLabelKey associates a PinnedImageSet with a MachineConfigPool. The
+	// Machine Config Operator matches it against the pool's `machineConfigSelector`, so it
+	// decides which nodes pre-pull and has to be compared when syncing, not only when creating.
+	MachineConfigPoolRoleLabelKey = "machineconfiguration.openshift.io/role"
+
+	// CheClusterNamespaceLabelKey and CheClusterNameLabelKey record which CheCluster a
+	// cluster-scoped object belongs to. A namespaced object says so through its owner
+	// reference; a PinnedImageSet cannot carry one, and its name alone does not settle it,
+	// since the name is built by joining the namespace and the name with a dash and two
+	// different pairs can join to the same string.
+	CheClusterNamespaceLabelKey = "che.eclipse.org/checluster-namespace"
+	CheClusterNameLabelKey      = "che.eclipse.org/checluster-name"
+
+	// MachineConfigPoolRole names the pool whose nodes pre-pull the images.
+	// Verified on OpenShift 4.22: `mcp/worker.spec.machineConfigSelector` is exactly
+	// `matchLabels: {machineconfiguration.openshift.io/role: worker}`.
+	MachineConfigPoolRole = "worker"
+
+	EditorDefinitionComponentName    = "editor-definition"
+	CheCABundle                      = "ca-bundle"
+	MetricsComponentName             = "metrics"
+	WorkspacesNamespaceComponentName = "workspaces-namespace"
 
 	// common
 	CheFlavor             = "che"

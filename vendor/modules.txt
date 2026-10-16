@@ -177,6 +177,7 @@ github.com/onsi/gomega/types
 ## explicit; go 1.26.0
 github.com/openshift/api/config/v1
 github.com/openshift/api/console/v1
+github.com/openshift/api/machineconfiguration/v1
 github.com/openshift/api/oauth/v1
 github.com/openshift/api/pkg/serialization
 github.com/openshift/api/project/v1

@@ -36,6 +36,7 @@ import (
 	"github.com/eclipse-che/che-operator/controllers/devworkspace/solver"
 	"github.com/eclipse-che/che-operator/controllers/usernamespace"
 
+	mcfgv1 "github.com/openshift/api/machineconfiguration/v1"
 	securityv1 "github.com/openshift/api/security/v1"
 
 	dwoApi "github.com/devfile/devworkspace-operator/apis/controller/v1alpha1"
@@ -143,6 +144,7 @@ func init() {
 		utilruntime.Must(projectv1.Install(scheme))
 		utilruntime.Must(securityv1.Install(scheme))
 		utilruntime.Must(templatev1.Install(scheme))
+		utilruntime.Must(mcfgv1.Install(scheme))
 	}
 
 	if infrastructure.IsServiceMonitorEnabled() {

@@ -12056,6 +12056,22 @@ spec:
                           Note that while this Operator and its behavior is community-supported, its payload may be commercially-supported
                           for pulling commercially-supported images.
                         type: boolean
+                      enablePinnedImageSet:
+                        description: |-
+                          Additionally pre-pull images with an OpenShift `PinnedImageSet`, which keeps them in the
+                          node image store without running a container per image. Defaults to `false`, in which
+                          case every image is pre-pulled by the community Kubernetes Image Puller as before.
+                          When you set the value to `true` on an OpenShift cluster able to reconcile a
+                          `PinnedImageSet`, the images referenced by digest are pinned and the rest are left to the
+                          community Kubernetes Image Puller, so that no image loses pre-pulling. On a cluster that
+                          cannot reconcile one, the setting has no effect beyond an explanatory message in the
+                          Operator log.
+                          Note that a `PinnedImageSet` is a cluster-scoped object and pinning is all-or-nothing:
+                          a single image that is not referenced by digest, not reachable, or not inspectable with
+                          `podman manifest inspect` leaves nothing pinned on the affected nodes, and the Machine
+                          Config Operator merges every set targeting a machine config pool, so the failure is
+                          reported against unrelated sets on the same pool as well.
+                        type: boolean
                       spec:
                         description: A Kubernetes Image Puller spec to configure the
                           image puller in the CheCluster.
@@ -28284,6 +28300,34 @@ rules:
   - authentications
   verbs:
   - get
+- apiGroups:
+  - apps
+  resourceNames:
+  - machine-config-daemon
+  resources:
+  - daemonsets
+  verbs:
+  - get
+- apiGroups:
+  - machineconfiguration.openshift.io
+  resources:
+  - pinnedimagesets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - machineconfiguration.openshift.io
+  resources:
+  - machineconfignodes
+  - machineconfigpools
+  verbs:
+  - get
+  - list
 - apiGroups:
   - ""
   resources:

@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2019-2024 Red Hat, Inc.
+// Copyright (c) 2019-2026 Red Hat, Inc.
 // This program and the accompanying materials are made
 // available under the terms of the Eclipse Public License 2.0
 // which is available at https://www.eclipse.org/legal/epl-2.0/
@@ -16,14 +16,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/eclipse-che/che-operator/pkg/common/chetypes"
 	"github.com/eclipse-che/che-operator/pkg/common/constants"
 	"github.com/eclipse-che/che-operator/pkg/common/diffs"
-	"github.com/eclipse-che/che-operator/pkg/common/infrastructure"
 	k8s_client "github.com/eclipse-che/che-operator/pkg/common/k8s-client"
 	"github.com/eclipse-che/che-operator/pkg/common/reconciler"
 	"github.com/eclipse-che/che-operator/pkg/common/utils"
@@ -50,45 +48,67 @@ const (
 	defaultDeploymentName = "kubernetes-image-puller"
 )
 
+// ImagesProvider yields the images to pre-pull. Both backends consume the very same list, so
+// that which images are pre-pulled never depends on which backend ends up serving them.
+type ImagesProvider interface {
+	Get(ctx *chetypes.DeployContext) ([]string, error)
+}
+
 type ImagePuller struct {
 	reconciler.Reconcilable
-	externalImages *ExternalImagesProvider
+	externalImages ImagesProvider
 }
 
 func NewImagePuller() *ImagePuller {
+	return NewImagePullerWithImagesProvider(NewExternalImagesProvider())
+}
+
+// NewImagePullerWithImagesProvider builds the reconciler over a given list. It exists so that
+// both reconcilers can be driven over one list and their two halves compared, which is the only
+// way to check that every image ends up served by exactly one of them.
+func NewImagePullerWithImagesProvider(externalImages ImagesProvider) *ImagePuller {
 	return &ImagePuller{
-		externalImages: NewExternalImagesProvider(),
+		externalImages: externalImages,
 	}
 }
 
 func (ip *ImagePuller) Reconcile(ctx *chetypes.DeployContext) (reconcile.Result, bool, error) {
-	externalImages, err := ip.externalImages.Get(ctx)
+	images, known, err := ImagesToPrePull(ctx, ip.externalImages)
 	if err != nil {
-		// Previously, failures to get external images didn't block reconciliation.
-		// Actually it should not happen, because all requests go to dashboard service (not external url).
-		// Added a workaround env var to ignore failures in case of any possible issues.
-		ignoreGetExternalImagesFailures := os.Getenv("CHE_OPERATOR__GET_EXTERNAL_IMAGES__IGNORE_FAILURES")
-		if ignoreGetExternalImagesFailures == "true" {
-			logger.Error(err, "Failed to get external images")
-		} else {
-			return reconcile.Result{}, false, err
-		}
+		return reconcile.Result{}, false, err
 	}
 
-	if ctx.CheCluster.Spec.Components.ImagePuller.Enable {
-		if !infrastructure.IsKubernetesImagePullerEnabled(ctx.ClusterAPI.DiscoveryClient) {
-			errMsg := "kubernetes Image Puller is not installed, in order to enable the property admin should install the operator first"
-			return reconcile.Result{}, false, errors.New(errMsg)
-		}
+	if !known {
+		return reconcile.Result{}, true, nil
+	}
 
-		if done, err := ip.syncKubernetesImagePuller(externalImages, ctx); !done {
-			return reconcile.Result{RequeueAfter: time.Second}, false, err
-		}
-	} else {
+	capabilities := GetCapabilities(ctx)
+	allocation := Allocate(images, capabilities)
+
+	// Only a cluster where neither backend can serve anything is an error. Where the native
+	// backend is usable, images it cannot carry are a partial result that the allocation log
+	// reports, and failing here would stop the reconciler chain before the PinnedImageSet
+	// reconciler ever ran, costing every digest referenced image its pinning over one tag.
+	if allocation.HasNoUsableBackend() {
+		errMsg := "kubernetes Image Puller is not installed, in order to enable the property admin should install the operator first"
+		return reconcile.Result{}, false, errors.New(errMsg)
+	}
+
+	// The community backend removes itself once its share of the list empties, rather than
+	// once the backend selection flips. On a cluster where every image is digest referenced
+	// that means it is never provisioned at all, without the administrator changing anything.
+	if len(allocation.Prepulled) == 0 {
 		if done, err := ip.uninstallImagePuller(ctx); !done {
 			return reconcile.Result{RequeueAfter: time.Second}, false, err
 		}
+
+		return reconcile.Result{}, true, nil
 	}
+
+	if done, err := ip.syncKubernetesImagePuller(allocation.Prepulled, ctx); !done {
+		return reconcile.Result{RequeueAfter: time.Second}, false, err
+	}
+
 	return reconcile.Result{}, true, nil
 }
 
@@ -106,7 +126,9 @@ func (ip *ImagePuller) uninstallImagePuller(ctx *chetypes.DeployContext) (bool, 
 		return false, err
 	}
 
-	if infrastructure.IsKubernetesImagePullerEnabled(ctx.ClusterAPI.DiscoveryClient) {
+	// Through the capabilities, so that the answer comes from the memo on the reconcile pass
+	// rather than from a second discovery enumeration.
+	if GetCapabilities(ctx).ImagePullerUsable {
 		if done, err := deploy.DeleteByKeyWithClient(
 			ctx.ClusterAPI.NonCachingClient,
 			types.NamespacedName{
@@ -121,7 +143,11 @@ func (ip *ImagePuller) uninstallImagePuller(ctx *chetypes.DeployContext) (bool, 
 	return true, nil
 }
 
-func (ip *ImagePuller) syncKubernetesImagePuller(externalImages []string, ctx *chetypes.DeployContext) (bool, error) {
+// syncKubernetesImagePuller provisions the community backend for the images allocated to it.
+// Those are passed in rather than taken from the CheCluster, because an administrator supplied
+// list is now split between the two backends as well, so the list the community backend runs
+// is a subset of the one that was configured.
+func (ip *ImagePuller) syncKubernetesImagePuller(prepulledImages []string, ctx *chetypes.DeployContext) (bool, error) {
 	imagePuller := &chev1alpha1.KubernetesImagePuller{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: chev1alpha1.GroupVersion.String(),
@@ -143,9 +169,9 @@ func (ip *ImagePuller) syncKubernetesImagePuller(externalImages []string, ctx *c
 	// See https://github.com/che-incubator/kubernetes-image-puller-operator/blob/main/controllers/kubernetesimagepuller_controller.go
 	imagePuller.Spec.ConfigMapName = utils.GetValue(imagePuller.Spec.ConfigMapName, defaultConfigMapName)
 	imagePuller.Spec.DeploymentName = utils.GetValue(imagePuller.Spec.DeploymentName, defaultDeploymentName)
-	if strings.TrimSpace(imagePuller.Spec.Images) == "" {
-		imagePuller.Spec.Images = convertToSpecField(externalImages)
-	}
+	// Read before the field is overwritten: Spec was copied from the CheCluster above, so at
+	// this point it still holds whatever the administrator wrote.
+	imagePuller.Spec.Images = convertToSpecField(prepulledImages, namesFromSpecField(imagePuller.Spec.Images))
 
 	if err := controllerutil.SetControllerReference(ctx.CheCluster, imagePuller, ctx.ClusterAPI.Scheme); err != nil {
 		return false, err
@@ -165,21 +191,92 @@ func getImagePullerCustomResourceName(ctx *chetypes.DeployContext) string {
 	return ctx.CheCluster.Name + "-image-puller"
 }
 
-func convertToSpecField(images []string) string {
+// convertToSpecField serialises the images for the community backend. preferredNames carries
+// the names an administrator already chose, keyed by image, and may be nil.
+//
+// Those names are kept rather than regenerated because the field is now rewritten on every
+// reconcile instead of only when empty, and the community backend turns each name into a
+// container name in its DaemonSet. Deriving our own would rename every container the first
+// time an upgraded operator reconciled, rolling the DaemonSet and briefly dropping the very
+// images it exists to hold, for a cluster that changed no configuration.
+func convertToSpecField(images []string, preferredNames map[string]string) string {
 	specField := ""
 	for index, image := range images {
-		imageName, _ := utils.GetImageNameAndTag(image)
-		imageNameEntries := strings.Split(imageName, "/")
-		name, err := convertToRFC1123(imageNameEntries[len(imageNameEntries)-1])
-		if err != nil {
-			name = "image"
+		name, found := preferredNames[image]
+		if !found {
+			imageName, _ := utils.GetImageNameAndTag(image)
+			imageNameEntries := strings.Split(imageName, "/")
+
+			var err error
+			if name, err = convertToRFC1123(imageNameEntries[len(imageNameEntries)-1]); err != nil {
+				name = "image"
+			}
+
+			// Adding index makes the name unique
+			name = fmt.Sprintf("%s-%d", name, index)
 		}
 
-		// Adding index makes the name unique
-		specField += fmt.Sprintf("%s-%d=%s;", name, index, image)
+		specField += fmt.Sprintf("%s=%s;", name, image)
 	}
 
 	return specField
+}
+
+// namesFromSpecField recovers the name an administrator gave each image, so that rewriting the
+// field does not rename what they named. Entries carrying no name of their own are absent from
+// the result and are named by convertToSpecField instead.
+func namesFromSpecField(specField string) map[string]string {
+	names := make(map[string]string)
+
+	for _, entry := range strings.Split(specField, ";") {
+		name, image, found := strings.Cut(strings.TrimSpace(entry), "=")
+		if !found {
+			continue
+		}
+
+		// First occurrence wins, because Allocate collapses duplicates the same way. Letting
+		// the last win would name the surviving image after the entry that was discarded.
+		name, image = strings.TrimSpace(name), strings.TrimSpace(image)
+		if _, named := names[image]; !named && name != "" && image != "" {
+			names[image] = name
+		}
+	}
+
+	return names
+}
+
+// ImagesFromSpecField is the inverse of convertToSpecField. It exists because
+// `spec.images` is the only durable record of what the community backend was asked to
+// pre-pull, so reading the accounting back, whether in a test or from a live cluster,
+// means parsing it. The names are discarded: they are derived from the image reference
+// and carry no information of their own.
+func ImagesFromSpecField(specField string) []string {
+	images := make([]string, 0)
+
+	for _, entry := range strings.Split(specField, ";") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+
+		// An image reference may itself contain '=' in a tag, so only the first one splits.
+		// An entry carrying no name at all is taken to be the image, rather than skipped. This
+		// field is no longer passed through untouched — it is parsed, split between the two
+		// backends and written back — so anything the parser declines to recognise is removed
+		// from the cluster by the next reconcile, with nothing in the accounting to say so.
+		// Returning it keeps it in the allocation, where it is either served by a backend or
+		// reported as ReasonMalformedReference, which is the outcome worth having either way.
+		_, image, found := strings.Cut(entry, "=")
+		if !found {
+			image = entry
+		}
+
+		if image = strings.TrimSpace(image); image != "" {
+			images = append(images, image)
+		}
+	}
+
+	return images
 }
 
 // convertToRFC1123 converts input string to RFC 1123 format ([a-z0-9]([-a-z0-9]*[a-z0-9])?) max 63 characters, if possible
